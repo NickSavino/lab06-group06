@@ -86,101 +86,112 @@ extern int mydestroy() {
   return 0;
 }
 
-extern void* myalloc(size_t size) {
- 
-  //Check if memory arena is initialized
-  if (!_arena_start) {
-    statusno = ERR_UNINITIALIZED;
-    return NULL;
-  }
-
-  //Adjust size to include block header and ensure pointer is setup correctly
-  size_t adjusted_size = size + sizeof(node_t);
-  
-  // if requested size is exactly one page, adjust size
-  if (adjusted_size == getpagesize()) {
-    size = getpagesize() - 2 * sizeof(node_t);
-    adjusted_size = size + sizeof(node_t);
-  }
-
-  node_t* current = _arena_start;
-
-  //Debug statements. use -v when running shell scripts to view
-  printf("Examining block at %p\n", current);
-  printf("Block size: %ld, Is free: %d\n", current->size, current->is_free);
-  printf("adjusted size is %ld", adjusted_size);
-
-  //Traverse the memory arena to find a suitable free block
-  while (current) {
-    //check if the current block is free and large enough
-    if (current->is_free && current->size >= adjusted_size) {
-      //If the current block size is exactly what we need or slightly bigger, allocate whole block
-      if(current->size <= adjusted_size + sizeof(node_t)) {
-        current->is_free = 0;
-        printf("Returning");
-        fflush(stdout);
-        return (void*)((char*)current + sizeof(node_t));
-      }
-      //otherwise split block
-      node_t* new_block = (node_t*)((char*)current + adjusted_size);
-      new_block->size = current->size - adjusted_size;
-      new_block->is_free = 1;
-      
-      //update fwd and bwd pointers of new block to add to list properly
-      new_block->fwd = current->fwd;
-      new_block->bwd = current;
-
-      //update current blocks properties to reflect the allocation
-      current->size = adjusted_size;
-      current->is_free = 0;
-      current->fwd = new_block;
-
-      return (void*)((char*)current + sizeof(node_t));
+// Allocate memory function
+extern void *myalloc(size_t size) {
+    // Check if myinit has been called
+    if (!_arena_start) {
+        statusno = ERR_UNINITIALIZED;
+        return NULL;
     }
-    current = current->fwd;
-  }
 
-  //if we reach this point, no suitable memory block was found
-  statusno = ERR_OUT_OF_MEMORY;
-  return NULL;
+    printf("Allocating memory:\n");
+    printf(" - Looking for free chunk of >= %li bytes\n", size);
+
+    // Find a free block of memory
+    node_t *current = _arena_start;
+    while (current != NULL) {
+        if (current->is_free && current->size >= size) {
+            printf(" - Found free chunk of %li bytes with header at %p\n", size, current);
+            printf(" - Free chunk-fwd currently points to %p\n", current->fwd);
+            printf(" - Free chunk-bwd currently points to %p\n", current->bwd);
+            printf(" - Checking if splitting is required\n");
+
+            // Split the block if it's too big
+            if (current->size > size + sizeof(node_t)) {
+                // Create a new block after the current block
+                node_t *new_block = (node_t *)((char *)current + sizeof(node_t) + size);
+                new_block->size = current->size - size - sizeof(node_t);
+                new_block->is_free = 1;
+                new_block->fwd = current->fwd;
+                new_block->bwd = current;
+
+                if (current->fwd != NULL) {
+                    current->fwd->bwd = new_block;
+                }
+                current->fwd = new_block;
+
+                // Update size of the current block to match the requested size
+                current->size = size;
+            }
+            printf(current->size > size + sizeof(node_t) ? " - Splitting is required\n" : " - Splitting is not required\n");
+
+            // Mark the block as allocated and update status
+            current->is_free = 0;
+            statusno = 0;
+
+            printf(" - Updating chunk header at %p\n", current);
+            printf(" - Being careful with my pointer arithmetic and void pointer casting\n");
+            printf(" - Allocation starts at %p\n", (current + 1));
+
+            // Return pointer to the user data in the block
+            return (void *)(current + 1);
+        }
+        current = current->fwd;
+    }
+
+    // No free block found
+    statusno = ERR_OUT_OF_MEMORY;
+    return NULL;
 }
 
-/* Frees a previously allocated block of memory
-*  ptr: Pointer to the block of memory to be freed
-*/
+// Free memory function
 extern void myfree(void *ptr) {
-  //If the provided printer is null, simply return
-  if (!ptr) {
-    return;
-  }
+    printf("Freeing allocated memory:\n");
+    printf(" - Supplied pointer %p:\n", ptr);
 
-  //retrieve block header from pointer
-  node_t* block = (node_t*)((char*)ptr - sizeof(node_t));
+    // Calculate the header pointer from the user data pointer
+    node_t *header = (node_t *)((char *)ptr - sizeof(node_t));
 
-  //mark block as free
-  block->is_free = 1;
+    printf(" - Being careful with my pointer arithmetic and void pointer casting\n");
+    printf(" - Accessing chunk header at %p\n", header);
+    printf(" - Chunk of size %li bytes\n", header->size);
 
-  //check next block for coalescing
-  node_t *next_block = (node_t*)((char*)block + block->size);
-  //if next block is free, we can merge the current block with the next block
-  if (next_block->is_free) {
-    block->size += next_block->size; // increase size of current block to include next block
-    block->fwd = next_block->fwd; //update fwd pointer to point to the block after the next block
-    //if the next block has a block after it, update its previous pointer, removing nextblock effectively
-    if (next_block->fwd) {
-      next_block->fwd->bwd = block;
+    // Mark the block as free
+    header->is_free = 1;
+
+    // Coalesce adjacent free blocks
+    node_t *prev = header->bwd;
+    node_t *next = header->fwd;
+    printf(" - Checking if coalescing is needed\n");
+    int coalescing = 0;
+
+    // Check if the block before the current block is free
+    if (prev != NULL && prev->is_free) {
+        coalescing = 1;
+
+        // Update the size of the previous block to include the size of the current block and the next block (if necessary)
+        prev->size += sizeof(node_t) + header->size;
+
+        // Update the forward and backward pointers of the previous block to skip over the current block
+        prev->fwd = next;
+        if (next != NULL) {
+            next->bwd = prev;
+        }
+
+        // Update the header pointer to point to the previous block
+        header = prev;
     }
-  }
 
-  //check previous block for coalescing
-  //if current block has a previous block that is free, we can merge it
-  if (block->bwd && block->bwd->is_free) {
-    block->bwd->size += block->size; //Increase size of previous block to include size of current
-    block->bwd->fwd = block->fwd; //update fwd pointer of previous block to point to the block after the current block
-    //if current block has a block after it, update its pointer
-    //this effectively removes current block from the list since its been merged with the previous and we dont require it anymore
-    if (block->fwd) {
-      block->fwd->bwd = block->bwd;
+    // Check if the block after the current is free
+    if (next != NULL && next->is_free) {
+        coalescing = 1;
+
+        // Update the size and pointers
+        header->size += sizeof(node_t) + next->size;
+        header->fwd = next->fwd;
+        if (next->fwd != NULL) {
+            next->fwd->bwd = header;
+        }
     }
-  }
+    (coalescing) ? printf(" - Coalescing is needed\n") : printf(" - Coalescing is not needed\n");
 }
