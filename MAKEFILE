@@ -1,9 +1,0 @@
-.PHONY: all
-all: myalloc.out
-
-scheduler.out: myalloc.c
-	gcc -Wall -o myalloc.out myalloc.c
-
-.PHONY: clean
-clean: 
-	rm -f myalloc.out
