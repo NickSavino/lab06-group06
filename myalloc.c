@@ -87,10 +87,100 @@ extern int mydestroy() {
 }
 
 extern void* myalloc(size_t size) {
-  // TODO: Implement
+ 
+  //Check if memory arena is initialized
+  if (!_arena_start) {
+    statusno = ERR_UNINITIALIZED;
+    return NULL;
+  }
+
+  //Adjust size to include block header and ensure pointer is setup correctly
+  size_t adjusted_size = size + sizeof(node_t);
+  
+  // if requested size is exactly one page, adjust size
+  if (adjusted_size == getpagesize()) {
+    size = getpagesize() - 2 * sizeof(node_t);
+    adjusted_size = size + sizeof(node_t);
+  }
+
+  node_t* current = _arena_start;
+
+  //Debug statements. use -v when running shell scripts to view
+  printf("Examining block at %p\n", current);
+  printf("Block size: %ld, Is free: %d\n", current->size, current->is_free);
+  printf("adjusted size is %ld", adjusted_size);
+
+  //Traverse the memory arena to find a suitable free block
+  while (current) {
+    //check if the current block is free and large enough
+    if (current->is_free && current->size >= adjusted_size) {
+      //If the current block size is exactly what we need or slightly bigger, allocate whole block
+      if(current->size <= adjusted_size + sizeof(node_t)) {
+        current->is_free = 0;
+        printf("Returning");
+        fflush(stdout);
+        return (void*)((char*)current + sizeof(node_t));
+      }
+      //otherwise split block
+      node_t* new_block = (node_t*)((char*)current + adjusted_size);
+      new_block->size = current->size - adjusted_size;
+      new_block->is_free = 1;
+      
+      //update fwd and bwd pointers of new block to add to list properly
+      new_block->fwd = current->fwd;
+      new_block->bwd = current;
+
+      //update current blocks properties to reflect the allocation
+      current->size = adjusted_size;
+      current->is_free = 0;
+      current->fwd = new_block;
+
+      return (void*)((char*)current + sizeof(node_t));
+    }
+    current = current->fwd;
+  }
+
+  //if we reach this point, no suitable memory block was found
+  statusno = ERR_OUT_OF_MEMORY;
   return NULL;
 }
 
+/* Frees a previously allocated block of memory
+*  ptr: Pointer to the block of memory to be freed
+*/
 extern void myfree(void *ptr) {
-  // TODO: Implement
+  //If the provided printer is null, simply return
+  if (!ptr) {
+    return;
+  }
+
+  //retrieve block header from pointer
+  node_t* block = (node_t*)((char*)ptr - sizeof(node_t));
+
+  //mark block as free
+  block->is_free = 1;
+
+  //check next block for coalescing
+  node_t *next_block = (node_t*)((char*)block + block->size);
+  //if next block is free, we can merge the current block with the next block
+  if (next_block->is_free) {
+    block->size += next_block->size; // increase size of current block to include next block
+    block->fwd = next_block->fwd; //update fwd pointer to point to the block after the next block
+    //if the next block has a block after it, update its previous pointer, removing nextblock effectively
+    if (next_block->fwd) {
+      next_block->fwd->bwd = block;
+    }
+  }
+
+  //check previous block for coalescing
+  //if current block has a previous block that is free, we can merge it
+  if (block->bwd && block->bwd->is_free) {
+    block->bwd->size += block->size; //Increase size of previous block to include size of current
+    block->bwd->fwd = block->fwd; //update fwd pointer of previous block to point to the block after the current block
+    //if current block has a block after it, update its pointer
+    //this effectively removes current block from the list since its been merged with the previous and we dont require it anymore
+    if (block->fwd) {
+      block->fwd->bwd = block->bwd;
+    }
+  }
 }
